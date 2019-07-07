@@ -11,8 +11,8 @@ from IPython import start_ipython
 from web3 import HTTPProvider, Web3
 
 
-class Contract(object):
-    CONTRACT_CLASSES_PATH = tempfile.gettempdir() + "/easy_contract-classes"
+class ContractMaker(object):
+    CONTRACT_CLASSES_PATH = tempfile.gettempdir() + "/easy-contract-classes"
 
     CONTRACT_CLASS_TPL = """
 class {class_name}(object):
@@ -24,31 +24,43 @@ class {class_name}(object):
         \"\"\"{docs}\"\"\"
         return self.contract.functions.{func_name}({args}).{call}({tx})"""
 
-    def __init__(self, web3, json_interface_file, creator=None):
-        self.json_interface = self._load_json(json_interface_file)
-
+    CONTRACT_CONSTRUCTOR_FUNC_TPL = """
+    @classmethod
+    def constructor(cls{args_with_comma}):
+        \"\"\"{docs}\"\"\"
+        web3 = getattr(cls, "__WEB3")
+        json_interface = getattr(cls, "__JSON_INTERFACE")
         contract = web3.eth.contract(
-            abi=self.json_interface["abi"], bytecode=self.json_interface["bytecode"]
+            abi=json_interface["abi"], bytecode=json_interface["bytecode"]
         )
-        creator = creator if creator else web3.eth.accounts[0]
-        self.contract = web3.eth.contract(
-            abi=self.json_interface["abi"],
-            bytecode=self.json_interface["bytecode"],
+        contract = web3.eth.contract(
+            abi=json_interface["abi"],
+            bytecode=json_interface["bytecode"],
             address=web3.eth.getTransactionReceipt(
-                contract.constructor().transact({"from": creator})
+                contract.constructor({args}).transact(
+                    dict([("from", web3.eth.accounts[0])])
+                )
             ).contractAddress,
         )
+
+        return cls(contract)"""
+
+    def __init__(self, web3, json_interface_file):
+        self.web3 = web3
+        self.json_interface = self._load_json(json_interface_file)
         self.class_name = self._normalize_name(self.json_interface["contractName"])
 
     @classmethod
-    def make(cls, web3, json_interface, creator):
-        return Contract(web3, json_interface, creator)._make0()
+    def make(cls, web3, json_interface_file):
+        cm = ContractMaker(web3, json_interface_file)
+        cm._append_import_path()
+        cm._create_py_class()
 
-    def _make0(self):
-        self._append_import_path()
-        self._create_py_class()
-        klass = getattr(import_module(self.class_name), self.class_name)
-        return klass(self.contract)
+        klass = getattr(import_module(cm.class_name), cm.class_name)
+        setattr(klass, "__WEB3", cm.web3)
+        setattr(klass, "__JSON_INTERFACE", cm.json_interface)
+
+        return klass
 
     def _load_json(self, fn):
         with open(fn) as f:
@@ -73,6 +85,8 @@ class {class_name}(object):
     def _make_class_file_content(self):
         r = self.CONTRACT_CLASS_TPL.format(class_name=self.class_name)
 
+        r += self._make_constructor()
+
         for v in self.json_interface["abi"]:
             if v["type"] != "function":
                 continue
@@ -81,39 +95,58 @@ class {class_name}(object):
 
         return r
 
-    def _make_func(self, abi):
-        call, tx = (
-            ("call", "") if abi["stateMutability"] == "view" else ("transact", "tx")
-        )
-        args = self._make_func_args(abi)
+    def _find_constructor_abi(self):
+        for v in self.json_interface["abi"]:
+            if v["type"] == "constructor":
+                return v
 
-        return self.CONTRACT_FUNC_TPL.format(
-            func_name=abi["name"],
+        return {}
+
+    def _make_constructor(self):
+        func_abi = self._find_constructor_abi()
+        args = self._make_func_args(func_abi)
+        return self.CONTRACT_CONSTRUCTOR_FUNC_TPL.format(
             args_with_comma=(", " + args) if args else "",
             args=args,
-            docs=self._make_func_docs(abi),
+            docs=self._make_func_docs("constructor", func_abi),
+        )
+
+    def _make_func(self, func_abi):
+        call, tx = (
+            ("call", "")
+            if func_abi["stateMutability"] == "view"
+            else ("transact", "tx")
+        )
+        args = self._make_func_args(func_abi)
+        return self.CONTRACT_FUNC_TPL.format(
+            func_name=func_abi["name"],
+            args_with_comma=(", " + args) if args else "",
+            args=args,
+            docs=self._make_func_docs(func_abi["name"], func_abi),
             call=call,
             tx=tx,
             tx_with_comma=(", " + tx) if tx else "",
         )
 
-    def _make_func_args(self, abi):
-        return ", ".join([self._normalize_name(v["name"]) for v in abi["inputs"]])
+    def _make_func_args(self, func_abi):
+        return ", ".join(
+            [self._normalize_name(v["name"]) for v in func_abi.get("inputs", [])]
+        )
 
-    def _make_func_docs(self, abi):
-        r = [abi["name"]]
+    def _make_func_docs(self, func_name, func_abi):
+        r = [func_name]
 
         args = []
-        for i in abi["inputs"]:
+        for i in func_abi.get("inputs", []):
             args.append("%s: %s" % (i["type"], i["name"]))
 
         r += ["(", ", ".join(args), ")"]
 
-        if abi["outputs"]:
+        if func_abi.get("outputs", []):
             r.append(" -> ")
 
             returns = []
-            for o in abi["outputs"]:
+            for o in func_abi.get("outputs", []):
                 if o["name"]:
                     returns.append("%s: %s" % (o["type"], o["name"]))
                 else:
@@ -131,23 +164,19 @@ class {class_name}(object):
     default="http://127.0.0.1:7545",
     help="web3 http provider endpoint, default: http://127.0.0.1:7545",
 )
-@click.option(
-    "--creator",
-    "-c",
-    default=None,
-    help="creator address of contract, default: web3.eth.account[0]",
-)
 @click.argument("contract_interface_json_file")
-def start(web3_endpoint, creator, contract_interface_json_file):
+def start(web3_endpoint, contract_interface_json_file):
     w3 = Web3(HTTPProvider(web3_endpoint))
-    contract = Contract.make(w3, contract_interface_json_file, creator)
+    # noinspection PyTypeChecker
+    contract_class = ContractMaker.make(w3, contract_interface_json_file)
     sys.exit(
         start_ipython(
             argv=[
-                "--TerminalInteractiveShell.banner2=*** Check out demonstration on https://github.com/simon-liu/easy_contract/ ***"
+                "--TerminalInteractiveShell.banner2=*** Check out demonstration on "
+                "https://github.com/simon-liu/easy_contract/ *** "
             ],
             user_ns={
-                "contract": contract,
+                "contract_class": contract_class,
                 "accounts": w3.eth.accounts,
                 "w3": w3,
                 "getTxReceipt": w3.eth.getTransactionReceipt,
