@@ -1,6 +1,6 @@
 Easy tool for using Ethereum Smart Contracts
 ###############################################################
-  
+
 Installation
 ====================
 
@@ -14,14 +14,14 @@ Usage
 
 .. code-block:: bash
 
-    $ easy_contract /path/to/build/contracts/DemoToken.json
-    
+    $ easy_contract /path/to/build/contracts/Demo.json
+
 👆command open IPython, available variables are: contract, accounts, w3, getTxReceipt
 
 Demonstration
 ====================
 
-Smart Contract is `Here <https://github.com/simon-liu/demo-erc20-token>`_
+Smart Contract is `Here <https://github.com/simon-liu/demo-contract>`_
 
 .. class:: no-web
 
