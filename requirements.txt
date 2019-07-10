@@ -1,4 +1,3 @@
 web3>=4.9.2
-ethtoken>=0.0.1a4
-click>=7.0
 ipython>=7.5.0
+click>=7.0

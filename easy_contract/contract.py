@@ -11,6 +11,11 @@ from IPython import start_ipython
 from web3 import HTTPProvider, Web3
 
 
+def __load_json(fn):
+    with open(fn) as f:
+        return json.loads(f.read())
+
+
 class ContractMaker(object):
     CONTRACT_CLASSES_PATH = tempfile.gettempdir() + "/easy-contract-classes"
 
@@ -45,26 +50,21 @@ class {class_name}(object):
 
         return cls(contract)"""
 
-    def __init__(self, web3, json_interface_file):
-        self.web3 = web3
-        self.json_interface = self._load_json(json_interface_file)
+    def __init__(self, json_interface):
+        self.json_interface = json_interface
         self.class_name = self._normalize_name(self.json_interface["contractName"])
 
     @classmethod
-    def make(cls, web3, json_interface_file):
-        cm = ContractMaker(web3, json_interface_file)
+    def make(cls, w3, json_interface):
+        cm = ContractMaker(json_interface)
         cm._append_import_path()
         cm._create_py_class()
 
         klass = getattr(import_module(cm.class_name), cm.class_name)
-        setattr(klass, "__WEB3", cm.web3)
+        setattr(klass, "__WEB3", w3)
         setattr(klass, "__JSON_INTERFACE", cm.json_interface)
 
         return klass
-
-    def _load_json(self, fn):
-        with open(fn) as f:
-            return json.loads(f.read())
 
     def _append_import_path(self):
         try:
@@ -84,7 +84,6 @@ class {class_name}(object):
 
     def _make_class_file_content(self):
         r = self.CONTRACT_CLASS_TPL.format(class_name=self.class_name)
-
         r += self._make_constructor()
 
         for v in self.json_interface["abi"]:
@@ -164,22 +163,20 @@ class {class_name}(object):
     default="http://127.0.0.1:7545",
     help="web3 http provider endpoint, default: http://127.0.0.1:7545",
 )
-@click.argument("contract_interface_json_file")
-def start(web3_endpoint, contract_interface_json_file):
+@click.argument("contract_json_interface_file")
+def start(web3_endpoint, contract_json_interface_file):
     w3 = Web3(HTTPProvider(web3_endpoint))
-    # noinspection PyTypeChecker
-    contract_class = ContractMaker.make(w3, contract_interface_json_file)
+    contract_class = ContractMaker.make(w3, __load_json(contract_json_interface_file))
     sys.exit(
         start_ipython(
             argv=[
                 "--TerminalInteractiveShell.banner2=*** Check out demonstration on "
-                "https://github.com/simon-liu/easy_contract/ *** "
+                "https://github.com/simon-liu/easy-contract/ ***"
             ],
             user_ns={
                 "contract_class": contract_class,
-                "accounts": w3.eth.accounts,
                 "w3": w3,
-                "getTxReceipt": w3.eth.getTransactionReceipt,
+                "accounts": w3.eth.accounts,
             },
         )
     )
